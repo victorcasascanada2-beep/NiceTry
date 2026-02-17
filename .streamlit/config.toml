@@ -1,0 +1,12 @@
+[theme]
+# Base
+base = "dark"
+
+# Colores principales
+primaryColor = "#7C3AED"              # violeta elegante (acciones)
+backgroundColor = "#0B1020"           # fondo casi negro, azul profundo
+secondaryBackgroundColor = "#121A33"  # tarjetas / paneles
+textColor = "#E9EEFF"                 # texto claro, no blanco puro
+
+# Tipografía
+font = "sans serif"
