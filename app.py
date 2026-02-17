@@ -1,6 +1,7 @@
+# app.py
+# Streamlit "estable" (sin sliders/presets), JSON robusto con autorreparación
+
 import json
-import random
-import time
 from datetime import datetime
 
 import streamlit as st
@@ -9,53 +10,25 @@ from google.oauth2 import service_account
 
 
 # ============================================================
-# Page + CSS "pro"
+# CONFIG FIJA (NO TOCAR)
 # ============================================================
-st.set_page_config(
-    page_title="Puntos de mantenimiento Tractor",
-    page_icon="🧰",
-    layout="centered",
-    initial_sidebar_state="expanded",
-)
+LOCATION = "us-central1"
+MODEL_NAME = "gemini-2.0-flash"
 
-st.markdown(
-    """
-<style>
-.block-container {max-width: 1100px; padding-top: 2rem; padding-bottom: 2.5rem;}
-/* Cards */
-.card {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 18px;
-  padding: 16px 16px 10px 16px;
+GEN_CONFIG = {
+    "response_mime_type": "application/json",
+    "temperature": 0.6,          # estable (evita “delirios” y JSON rotos)
+    "top_p": 0.85,
+    "top_k": 40,
+    "max_output_tokens": 4096,   # evita truncados
+    "seed": 20240317,            # seed fija para repetibilidad
 }
-.card h3 {margin-top: 0.1rem;}
-.small-muted {opacity: 0.75; font-size: 0.95rem;}
-.hr {height:1px; background: rgba(255,255,255,0.10); margin: 14px 0 14px 0;}
-/* Pills */
-.pill {
-  display:inline-block; padding: 3px 10px; border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.06);
-  font-size: 0.85rem; opacity: 0.9;
+
+REPAIR_CONFIG = {
+    "response_mime_type": "application/json",
+    "temperature": 0.0,          # reparación determinista
+    "max_output_tokens": 2048,
 }
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-st.title("🧰 Puntos de mantenimiento (por horas)")
-st.markdown(
-    '<div class="small-muted">Introduce <b>marca</b>, <b>modelo</b> y <b>horas</b>. La app genera un checklist por sistemas y un plan por intervalos.</div>',
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# Vertex / Gemini (solo Streamlit con st.secrets)
-# ============================================================
-DEFAULT_LOCATION = "us-central1"
-DEFAULT_MODEL = "gemini-2.0-flash"
 
 SYSTEMS = [
     "Motor y admisión",
@@ -73,26 +46,82 @@ SYSTEMS = [
     "Neumáticos",
 ]
 
-PRESETS = {
-    "Equilibrado (taller)": {
-        "top_p": 0.9,
-        "top_k": 40,
-        "max_output_tokens": 2048,
-    },
-    "Más creativo (ideas + checklist)": {
-        "top_p": 0.95,
-        "top_k": 64,
-        "max_output_tokens": 3072,
-    },
-    "Más conservador (menos inventar)": {
-        "top_p": 0.8,
-        "top_k": 20,
-        "max_output_tokens": 2048,
-    },
+
+# ============================================================
+# UI (look limpio + algo de CSS)
+# ============================================================
+st.set_page_config(page_title="Puntos de mantenimiento Tractor", page_icon="🧰", layout="centered")
+
+st.markdown(
+    """
+<style>
+.block-container {max-width: 1100px; padding-top: 1.6rem; padding-bottom: 2.2rem;}
+#MainMenu, footer, header {visibility: hidden;}
+.card {
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 18px;
+  padding: 16px 16px 12px 16px;
 }
+.hero {
+  background: radial-gradient(1100px circle at 20% 0%, rgba(124,58,237,.25), transparent 55%),
+              radial-gradient(900px circle at 95% 10%, rgba(56,189,248,.18), transparent 45%),
+              linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0));
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 22px;
+  padding: 18px 18px 14px 18px;
+  margin-bottom: 16px;
+}
+.hero h1 {margin: 0 0 .2rem 0; line-height: 1.05;}
+.hero p {margin: 0; opacity: .78;}
+.pill {
+  display:inline-block; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.06);
+  font-size: .85rem; opacity:.92;
+}
+.stButton > button {
+  border-radius: 14px !important;
+  border: 1px solid rgba(255,255,255,.16) !important;
+  padding: 0.7rem 1rem !important;
+  font-weight: 700 !important;
+  background: linear-gradient(135deg, rgba(124,58,237,.95), rgba(56,189,248,.65)) !important;
+}
+.stButton > button:hover {filter: brightness(1.06); transform: translateY(-1px);}
+div[data-testid="stForm"] {
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255,255,255,.03);
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+<div class="hero">
+  <h1>🧰 Puntos de mantenimiento (por horas)</h1>
+  <p>Introduce marca, modelo y horas. Checklist por sistemas + consumibles + críticos. Salida JSON descargable.</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    f"<span class='pill'>Modelo: {MODEL_NAME}</span> "
+    f"<span class='pill'>Temp: {GEN_CONFIG['temperature']}</span> "
+    f"<span class='pill'>Seed: {GEN_CONFIG['seed']}</span> "
+    f"<span class='pill'>Tokens: {GEN_CONFIG['max_output_tokens']}</span>",
+    unsafe_allow_html=True,
+)
 
 
-def conectar_vertex_desde_streamlit(location: str = DEFAULT_LOCATION) -> genai.Client:
+# ============================================================
+# Vertex / Gemini (Streamlit secrets)
+# ============================================================
+def conectar_vertex_desde_streamlit(location: str = LOCATION) -> genai.Client:
     """
     Conexión a Vertex AI usando service account guardada en st.secrets["google"].
     Repara private_key si viene con \\n.
@@ -133,23 +162,22 @@ def get_client() -> genai.Client:
     return conectar_vertex_desde_streamlit()
 
 
-def build_prompt(marca: str, modelo: str, horas: int, objetivo: str) -> str:
-    """
-    Prompt: JSON estricto + defensivo (si no sabe, que lo diga).
-    Incluimos 'fuentes' como lista de URLs o identificadores (si las conoce).
-    """
+# ============================================================
+# Prompt (acotado para evitar truncados)
+# ============================================================
+def build_prompt(marca: str, modelo: str, horas: int) -> str:
     systems_txt = ", ".join([f'"{s}"' for s in SYSTEMS])
 
     return f"""
 Eres un jefe de taller especialista en tractores agrícolas.
-Tu objetivo: {objetivo}
+Devuelve SOLO JSON válido (sin texto adicional, sin markdown).
 
 Datos:
 - Marca: {marca}
 - Modelo: {modelo}
 - Horas actuales: {horas}
 
-Devuelve SOLO JSON válido (sin texto adicional, sin markdown), con esta estructura exacta:
+Estructura exacta:
 
 {{
   "resumen": {{
@@ -187,7 +215,7 @@ Devuelve SOLO JSON válido (sin texto adicional, sin markdown), con esta estruct
   "fuentes": [
     {{
       "titulo": "...",
-      "url": "...",
+      "url": "",
       "nota": "si no tienes fuente real, deja url vacío y explica"
     }}
   ],
@@ -209,13 +237,17 @@ Devuelve SOLO JSON válido (sin texto adicional, sin markdown), con esta estruct
 
 Reglas:
 - Sistemas permitidos (usa EXACTAMENTE uno de estos): [{systems_txt}]
-- Si no sabes intervalos exactos del modelo, usa intervalos típicos (250/500/1000/1500/2000h) y explica en "suposiciones".
-- Evita números ultra específicos si no estás seguro; usa "aprox" y deja claro en notas/suposiciones.
-- "ref_partes": si no puedes asegurar referencias, pon "confianza":"Baja" y explica el motivo; NO inventes con confianza alta.
-- "fuentes": si no tienes URLs reales, deja "url":"" y explica en "nota" que no hay grounding.
+- Si no sabes intervalos exactos del modelo, usa intervalos típicos (250/500/1000/1500/2000h) y explícalo en "suposiciones".
+- Máximo 4 tareas por sistema (prioriza las más relevantes).
+- Evita cifras ultra específicas si no estás seguro; usa "aprox" y aclara en notas.
+- NO inventes referencias con confianza alta: si dudas, pon confianza "Baja" y explica motivo.
+- Si la respuesta empieza a ser larga, REDUCE contenido antes de romper el JSON. Cierra siempre llaves y listas.
 """.strip()
 
 
+# ============================================================
+# JSON defensivo + reparación automática
+# ============================================================
 def _strip_code_fences(text: str) -> str:
     t = (text or "").strip()
     if t.startswith("```"):
@@ -225,99 +257,83 @@ def _strip_code_fences(text: str) -> str:
     return t
 
 
-def call_ai(
-    marca: str,
-    modelo: str,
-    horas: int,
-    model_name: str,
-    temperature: float,
-    seed: int,
-    preset: dict,
-    objetivo: str,
-) -> dict:
-    client = get_client()
-    prompt = build_prompt(marca, modelo, horas, objetivo)
+def _extract_json_object(text: str) -> str:
+    """Coge desde el primer '{' hasta el último '}'."""
+    t = (text or "").strip()
+    a = t.find("{")
+    b = t.rfind("}")
+    if a != -1 and b != -1 and b > a:
+        return t[a : b + 1]
+    return t
 
-    # Config generación (según SDK puede variar; dejamos fallback)
-    cfg = {
-        "response_mime_type": "application/json",
-        "temperature": float(temperature),
-        "top_p": float(preset.get("top_p", 0.9)),
-        "top_k": int(preset.get("top_k", 40)),
-        "max_output_tokens": int(preset.get("max_output_tokens", 2048)),
-        # seed: algunos SDK lo ignoran; lo dejamos por si está soportado
-        "seed": int(seed),
-    }
 
+def _repair_json_with_model(client: genai.Client, bad_text: str) -> str:
+    """Pide al modelo que cierre/reponga el JSON sin cambiar estructura."""
+    repair_prompt = f"""
+El siguiente JSON está inválido o truncado. Arréglalo.
+
+Reglas:
+- Devuelve SOLO JSON válido (sin markdown, sin texto).
+- Mantén la misma estructura y campos.
+- Si falta el final, CIERRA correctamente listas y objetos.
+- NO añadas explicaciones fuera del JSON.
+
+JSON a reparar:
+{bad_text}
+""".strip()
+
+    # intentamos forzar JSON
     try:
         resp = client.models.generate_content(
-            model=model_name,
+            model=MODEL_NAME,
+            contents=repair_prompt,
+            config=REPAIR_CONFIG,
+        )
+        return _strip_code_fences(resp.text)
+    except Exception:
+        resp = client.models.generate_content(model=MODEL_NAME, contents=repair_prompt)
+        return _strip_code_fences(resp.text)
+
+
+def call_ai(marca: str, modelo: str, horas: int) -> dict:
+    client = get_client()
+    prompt = build_prompt(marca, modelo, horas)
+
+    # 1) llamada principal
+    try:
+        resp = client.models.generate_content(
+            model=MODEL_NAME,
             contents=prompt,
-            config=cfg,
+            config=GEN_CONFIG,
         )
         text = _strip_code_fences(resp.text)
     except Exception:
-        # Fallback conservador
-        resp = client.models.generate_content(model=model_name, contents=prompt)
+        # fallback si el SDK ignora config
+        resp = client.models.generate_content(model=MODEL_NAME, contents=prompt)
         text = _strip_code_fences(resp.text)
 
+    # 2) parse normal
+    text2 = _extract_json_object(text)
     try:
-        return json.loads(text)
-    except Exception as e:
-        raise ValueError(
-            f"No se pudo parsear JSON devuelto por IA. Error: {e}\n\nRespuesta IA:\n{text}"
-        )
+        return json.loads(text2)
+    except Exception:
+        # 3) reparación
+        fixed = _repair_json_with_model(client, text2)
+        fixed2 = _extract_json_object(fixed)
+        return json.loads(fixed2)
 
 
 # ============================================================
 # Session state
 # ============================================================
 if "history" not in st.session_state:
-    st.session_state.history = []  # lista de dicts: {ts, inputs, data}
+    st.session_state.history = []
 if "last_data" not in st.session_state:
     st.session_state.last_data = None
 
 
 # ============================================================
-# Sidebar: settings
-# ============================================================
-with st.sidebar:
-    st.markdown("### ⚙️ Ajustes")
-
-    preset_name = st.selectbox("Preset", list(PRESETS.keys()), index=0)
-    preset = PRESETS[preset_name]
-
-    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-
-    model_name = st.text_input("Modelo IA (Vertex)", value=DEFAULT_MODEL)
-    location = st.text_input("Región Vertex", value=DEFAULT_LOCATION)
-
-    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-
-    temperature = st.slider("Temperatura", 0.0, 1.5, 1.0, 0.05)
-    seed_mode = st.radio("Seed", ["Aleatoria (cada ejecución)", "Fija"], horizontal=True)
-
-    if seed_mode == "Fija":
-        seed = st.number_input("Seed fija", min_value=0, max_value=2_147_483_647, value=123456, step=1)
-    else:
-        seed = random.randint(0, 2_147_483_647)
-
-    objetivo = st.text_area(
-        "Objetivo (estilo de salida)",
-        value="Checklist claro para taller, con prioridades y consumibles. Sé realista: si no sabes algo, dilo.",
-        height=90,
-    )
-
-    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-
-    if st.button("🧹 Borrar historial", use_container_width=True):
-        st.session_state.history = []
-        st.session_state.last_data = None
-        st.success("Historial borrado.")
-
-
-# ============================================================
-# Main layout: input card + output tabs
+# FORM (inputs)
 # ============================================================
 left, right = st.columns([1.15, 0.85], gap="large")
 
@@ -334,71 +350,41 @@ with left:
 
         horas = st.number_input("Horas actuales", min_value=0, value=250, step=10)
 
-        c3, c4 = st.columns([0.55, 0.45])
-        with c3:
-            submit = st.form_submit_button("🚀 Calcular mantenimiento", use_container_width=True)
-        with c4:
-            st.markdown(
-                f'<span class="pill">Preset: {preset_name}</span> '
-                f'<span class="pill">Temp: {temperature}</span> '
-                f'<span class="pill">Seed: {seed}</span>',
-                unsafe_allow_html=True,
-            )
+        submit = st.form_submit_button("🚀 Calcular mantenimiento", use_container_width=True)
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 with right:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### 📌 Estado")
-    st.caption("Validación, métricas y avisos")
-
-    missing = []
-    if "marca" not in st.session_state:
-        pass
 
     if st.session_state.last_data:
         resumen = st.session_state.last_data.get("resumen", {}) or {}
-        conf = resumen.get("confianza", "—")
-        intervalo = resumen.get("intervalo_mas_cercano_h", "—")
-        st.metric("Confianza", conf)
-        st.metric("Intervalo cercano (h)", intervalo)
+        st.metric("Confianza", resumen.get("confianza", "—"))
+        st.metric("Intervalo cercano (h)", resumen.get("intervalo_mas_cercano_h", "—"))
     else:
-        st.info("Aún no hay resultados. Rellena el formulario y pulsa **Calcular**.")
+        st.info("Rellena el formulario y pulsa **Calcular**.")
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    if st.button("🧹 Borrar historial", use_container_width=True):
+        st.session_state.history = []
+        st.session_state.last_data = None
+        st.success("Historial borrado.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ============================================================
-# Run
+# RUN
 # ============================================================
 if submit:
     if not marca.strip() or not modelo.strip():
         st.error("Faltan datos: **marca** y **modelo** son obligatorios.")
         st.stop()
 
-    # Re-conectar si el usuario cambia región (cache_resource usa DEFAULT_LOCATION).
-    # Para no complicar: avisamos si cambió.
-    if location.strip() != DEFAULT_LOCATION:
-        st.warning(
-            f"Has cambiado la región a **{location}**, pero el cliente cacheado usa **{DEFAULT_LOCATION}**. "
-            "Si necesitas otra región, cambia DEFAULT_LOCATION en el código y redeploy."
-        )
-
     with st.status("Generando plan de mantenimiento…", expanded=True) as status:
-        st.write("📨 Preparando prompt…")
-        time.sleep(0.05)
         st.write("🧠 Llamando a Vertex…")
         try:
-            data = call_ai(
-                marca.strip(),
-                modelo.strip(),
-                int(horas),
-                model_name.strip(),
-                temperature=float(temperature),
-                seed=int(seed),
-                preset=preset,
-                objetivo=objetivo.strip(),
-            )
+            data = call_ai(marca.strip(), modelo.strip(), int(horas))
         except Exception as e:
             status.update(label="Error", state="error")
             st.error(str(e))
@@ -411,25 +397,16 @@ if submit:
         0,
         {
             "ts": datetime.now().isoformat(timespec="seconds"),
-            "inputs": {
-                "marca": marca.strip(),
-                "modelo": modelo.strip(),
-                "horas": int(horas),
-                "model": model_name.strip(),
-                "temperature": float(temperature),
-                "seed": int(seed),
-                "preset": preset_name,
-            },
+            "inputs": {"marca": marca.strip(), "modelo": modelo.strip(), "horas": int(horas)},
             "data": data,
         },
     )
 
 
 # ============================================================
-# Output
+# OUTPUT (tabs)
 # ============================================================
 data = st.session_state.last_data
-
 tabs = st.tabs(["✅ Checklist", "🧾 Resumen", "🧩 Partes & fuentes", "📦 Consumibles", "⚠️ Críticos", "🧠 Suposiciones", "🧬 JSON", "🕘 Historial"])
 
 with tabs[0]:
@@ -483,9 +460,9 @@ with tabs[2]:
     else:
         st.subheader("Ref. de partes")
         st.json(data.get("ref_partes", []) or [])
-        st.subheader("Fuentes (si existen)")
+        st.subheader("Fuentes")
         st.json(data.get("fuentes", []) or [])
-        st.warning("Si 'fuentes.url' viene vacío, NO hay grounding real: las referencias pueden ser aproximadas.")
+        st.warning("Si 'fuentes.url' viene vacío, NO hay grounding real: referencias aproximadas.")
 
 with tabs[3]:
     if not data:
@@ -515,10 +492,14 @@ with tabs[6]:
         st.subheader("Salida JSON completa")
         st.code(json.dumps(data, ensure_ascii=False, indent=2), language="json")
 
+        resumen = data.get("resumen", {}) or {}
+        fn = f"mantenimiento_{resumen.get('marca','marca')}_{resumen.get('modelo','modelo')}_{resumen.get('horas','horas')}h.json"
+        fn = fn.replace(" ", "_")
+
         st.download_button(
             "⬇️ Descargar JSON",
             data=json.dumps(data, ensure_ascii=False, indent=2),
-            file_name=f"mantenimiento_{(data.get('resumen', {}).get('marca','') or 'marca')}_{(data.get('resumen', {}).get('modelo','') or 'modelo')}_{(data.get('resumen', {}).get('horas','') or 'horas')}h.json".replace(" ", "_"),
+            file_name=fn,
             mime="application/json",
             use_container_width=True,
         )
@@ -531,7 +512,7 @@ with tabs[7]:
         for i, item in enumerate(st.session_state.history[:20], start=1):
             inputs = item.get("inputs", {})
             ts = item.get("ts", "")
-            with st.expander(f"{i}. {inputs.get('marca','?')} {inputs.get('modelo','?')} — {inputs.get('horas','?')}h  ·  {ts}", expanded=False):
+            with st.expander(f"{i}. {inputs.get('marca','?')} {inputs.get('modelo','?')} — {inputs.get('horas','?')}h · {ts}", expanded=False):
                 st.json(inputs)
                 st.code(json.dumps(item.get("data", {}), ensure_ascii=False, indent=2), language="json")
 
