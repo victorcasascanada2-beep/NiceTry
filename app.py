@@ -1,22 +1,96 @@
-
 import json
-import streamlit as st
+import random
+import time
+from datetime import datetime
 
+import streamlit as st
 from google import genai
 from google.oauth2 import service_account
 
+
 # ============================================================
-# UI
+# Page + CSS "pro"
 # ============================================================
-st.set_page_config(page_title="Puntos de mantenimiento Tractor", page_icon="🧰", layout="centered")
+st.set_page_config(
+    page_title="Puntos de mantenimiento Tractor",
+    page_icon="🧰",
+    layout="centered",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+<style>
+.block-container {max-width: 1100px; padding-top: 2rem; padding-bottom: 2.5rem;}
+/* Cards */
+.card {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 18px;
+  padding: 16px 16px 10px 16px;
+}
+.card h3 {margin-top: 0.1rem;}
+.small-muted {opacity: 0.75; font-size: 0.95rem;}
+.hr {height:1px; background: rgba(255,255,255,0.10); margin: 14px 0 14px 0;}
+/* Pills */
+.pill {
+  display:inline-block; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  font-size: 0.85rem; opacity: 0.9;
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 st.title("🧰 Puntos de mantenimiento (por horas)")
-st.caption("Introduce marca, modelo y horas. La app genera un checklist y un plan por intervalos.")
+st.markdown(
+    '<div class="small-muted">Introduce <b>marca</b>, <b>modelo</b> y <b>horas</b>. La app genera un checklist por sistemas y un plan por intervalos.</div>',
+    unsafe_allow_html=True,
+)
+
 
 # ============================================================
 # Vertex / Gemini (solo Streamlit con st.secrets)
 # ============================================================
-DEFAULT_LOCATION = "us-central1"  # cámbialo si tu Vertex está en otra región
-DEFAULT_MODEL = "gemini-2.0-flash"  # cámbialo si usas otro (p.ej. gemini-1.5-pro)
+DEFAULT_LOCATION = "us-central1"
+DEFAULT_MODEL = "gemini-2.0-flash"
+
+SYSTEMS = [
+    "Motor y admisión",
+    "Refrigeración",
+    "Combustible",
+    "Transmisión",
+    "Hidráulico",
+    "Frenos",
+    "Dirección",
+    "Eje delantero",
+    "PTO/TDF",
+    "Electricidad",
+    "Cabina",
+    "Engrase general",
+    "Neumáticos",
+]
+
+PRESETS = {
+    "Equilibrado (taller)": {
+        "top_p": 0.9,
+        "top_k": 40,
+        "max_output_tokens": 2048,
+    },
+    "Más creativo (ideas + checklist)": {
+        "top_p": 0.95,
+        "top_k": 64,
+        "max_output_tokens": 3072,
+    },
+    "Más conservador (menos inventar)": {
+        "top_p": 0.8,
+        "top_k": 20,
+        "max_output_tokens": 2048,
+    },
+}
+
 
 def conectar_vertex_desde_streamlit(location: str = DEFAULT_LOCATION) -> genai.Client:
     """
@@ -54,32 +128,44 @@ def conectar_vertex_desde_streamlit(location: str = DEFAULT_LOCATION) -> genai.C
     )
 
 
-def build_prompt(marca: str, modelo: str, horas: int) -> str:
+@st.cache_resource(show_spinner=False)
+def get_client() -> genai.Client:
+    return conectar_vertex_desde_streamlit()
+
+
+def build_prompt(marca: str, modelo: str, horas: int, objetivo: str) -> str:
+    """
+    Prompt: JSON estricto + defensivo (si no sabe, que lo diga).
+    Incluimos 'fuentes' como lista de URLs o identificadores (si las conoce).
+    """
+    systems_txt = ", ".join([f'"{s}"' for s in SYSTEMS])
+
     return f"""
 Eres un jefe de taller especialista en tractores agrícolas.
+Tu objetivo: {objetivo}
 
-Quiero que calcules el mantenimiento que corresponde con:
+Datos:
 - Marca: {marca}
 - Modelo: {modelo}
 - Horas actuales: {horas}
-- Investiga en google y dime la referencia de la parte a montar.
-Entregable (en ESPAÑOL) y SOLO en JSON válido (sin texto adicional), con esta estructura exacta:
+
+Devuelve SOLO JSON válido (sin texto adicional, sin markdown), con esta estructura exacta:
 
 {{
   "resumen": {{
-    "marca": "...",
-    "modelo": "...",
-    "horas": 0,
+    "marca": "{marca}",
+    "modelo": "{modelo}",
+    "horas": {horas},
     "intervalo_mas_cercano_h": 0,
     "razon_intervalo": "...",
-    "Ref de partes": "..."
+    "confianza": "Alta | Media | Baja"
   }},
   "puntos_mantenimiento": [
     {{
       "sistema": "Motor y admisión",
       "items": [
         {{
-          "tarea": "Cambiar aceite motor",
+          "tarea": "...",
           "tipo": "Sustitución | Inspección | Limpieza | Ajuste | Engrase",
           "prioridad": "Alta | Media | Baja",
           "frecuencia_h": 0,
@@ -90,6 +176,21 @@ Entregable (en ESPAÑOL) y SOLO en JSON válido (sin texto adicional), con esta 
       ]
     }}
   ],
+  "ref_partes": [
+    {{
+      "pieza": "Filtro aceite motor",
+      "referencia": "...",
+      "motivo": "...",
+      "confianza": "Alta | Media | Baja"
+    }}
+  ],
+  "fuentes": [
+    {{
+      "titulo": "...",
+      "url": "...",
+      "nota": "si no tienes fuente real, deja url vacío y explica"
+    }}
+  ],
   "consumibles_recomendados": [
     {{
       "nombre": "Aceite motor 15W-40",
@@ -98,129 +199,99 @@ Entregable (en ESPAÑOL) y SOLO en JSON válido (sin texto adicional), con esta 
   ],
   "chequeos_criticos": [
     {{
-      "alerta": "Sobrecalentamiento",
+      "alerta": "...",
       "que_mirar": ["..."],
       "accion": "..."
     }}
   ],
-  "suposiciones": ["Si falta info, indica aquí lo supuesto (ej. intervalo típico 500h, etc.)"]
+  "suposiciones": ["..."]
 }}
 
 Reglas:
-- Si no sabes el intervalo exacto del modelo, usa intervalos típicos (250/500/1000/1500/2000h) y explica en "suposiciones".
-- Agrupa en sistemas: Motor/Admisión, Refrigeración, Combustible, Transmisión, Hidráulico, Frenos, Dirección, Eje delantero, PTO/TDF, Electricidad, Cabina, Engrase general, Neumáticos.
-- Incluye tareas realistas: filtros (aire/combustible/hidráulico), correas, refrigerante, engrase, niveles, holguras, fugas, diagnosis básica.
-- Evita cifras ultra específicas si no estás seguro; usa "aprox" y deja claro en notas/suposiciones.
-"""
+- Sistemas permitidos (usa EXACTAMENTE uno de estos): [{systems_txt}]
+- Si no sabes intervalos exactos del modelo, usa intervalos típicos (250/500/1000/1500/2000h) y explica en "suposiciones".
+- Evita números ultra específicos si no estás seguro; usa "aprox" y deja claro en notas/suposiciones.
+- "ref_partes": si no puedes asegurar referencias, pon "confianza":"Baja" y explica el motivo; NO inventes con confianza alta.
+- "fuentes": si no tienes URLs reales, deja "url":"" y explica en "nota" que no hay grounding.
+""".strip()
 
 
-@st.cache_resource(show_spinner=False)
-def get_client() -> genai.Client:
-    return conectar_vertex_desde_streamlit()
+def _strip_code_fences(text: str) -> str:
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = t.strip("`").strip()
+        if t.lower().startswith("json"):
+            t = t[4:].strip()
+    return t
 
 
-def call_ai(marca: str, modelo: str, horas: int, model_name: str) -> dict:
+def call_ai(
+    marca: str,
+    modelo: str,
+    horas: int,
+    model_name: str,
+    temperature: float,
+    seed: int,
+    preset: dict,
+    objetivo: str,
+) -> dict:
     client = get_client()
-    prompt = build_prompt(marca, modelo, horas)
+    prompt = build_prompt(marca, modelo, horas, objetivo)
 
-    # Salida en JSON estricta (si tu SDK/versión no soporta response_mime_type, hacemos fallback).
+    # Config generación (según SDK puede variar; dejamos fallback)
+    cfg = {
+        "response_mime_type": "application/json",
+        "temperature": float(temperature),
+        "top_p": float(preset.get("top_p", 0.9)),
+        "top_k": int(preset.get("top_k", 40)),
+        "max_output_tokens": int(preset.get("max_output_tokens", 2048)),
+        # seed: algunos SDK lo ignoran; lo dejamos por si está soportado
+        "seed": int(seed),
+    }
+
     try:
         resp = client.models.generate_content(
             model=model_name,
             contents=prompt,
-            config={"response_mime_type": "application/json"},
+            config=cfg,
         )
-        text = (resp.text or "").strip()
+        text = _strip_code_fences(resp.text)
     except Exception:
+        # Fallback conservador
         resp = client.models.generate_content(model=model_name, contents=prompt)
-        text = (resp.text or "").strip()
-
-    # Limpieza defensiva (por si el modelo mete ```json ... ```).
-    if text.startswith("```"):
-        text = text.strip("`")
-        # a veces queda "json\n{...}"
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
+        text = _strip_code_fences(resp.text)
 
     try:
         return json.loads(text)
     except Exception as e:
-        raise ValueError(f"No se pudo parsear JSON devuelto por IA. Error: {e}\n\nRespuesta IA:\n{text}")
+        raise ValueError(
+            f"No se pudo parsear JSON devuelto por IA. Error: {e}\n\nRespuesta IA:\n{text}"
+        )
 
 
 # ============================================================
-# FORM
+# Session state
 # ============================================================
-with st.form("mantenimiento"):
-    c1, c2 = st.columns(2)
-    with c1:
-        marca = st.text_input("Marca", placeholder="John Deere, New Holland, Case IH…")
-    with c2:
-        modelo = st.text_input("Modelo", placeholder="6120M, T7.230, Puma 150…")
+if "history" not in st.session_state:
+    st.session_state.history = []  # lista de dicts: {ts, inputs, data}
+if "last_data" not in st.session_state:
+    st.session_state.last_data = None
 
-    horas = st.number_input("Horas actuales", min_value=0, value=250, step=10)
 
-    # Opcional: permitir cambiar modelo Gemini sin tocar código
+# ============================================================
+# Sidebar: settings
+# ============================================================
+with st.sidebar:
+    st.markdown("### ⚙️ Ajustes")
+
+    preset_name = st.selectbox("Preset", list(PRESETS.keys()), index=0)
+    preset = PRESETS[preset_name]
+
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+
     model_name = st.text_input("Modelo IA (Vertex)", value=DEFAULT_MODEL)
+    location = st.text_input("Región Vertex", value=DEFAULT_LOCATION)
 
-    submit = st.form_submit_button("Calcular puntos de mantenimiento")
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
-# ============================================================
-# RUN
-# ============================================================
-if submit:
-    if not marca.strip() or not modelo.strip():
-        st.error("Faltan datos: marca y modelo son obligatorios.")
-        st.stop()
-
-    with st.spinner("Calculando…"):
-        try:
-            data = call_ai(marca.strip(), modelo.strip(), int(horas), model_name.strip())
-        except Exception as e:
-            st.error(str(e))
-            st.stop()
-
-    # Render
-    st.subheader("Resumen")
-    st.json(data.get("resumen", {}))
-
-    st.subheader("Puntos de mantenimiento")
-    for bloque in data.get("puntos_mantenimiento", []):
-        sistema = bloque.get("sistema", "Sistema")
-        st.markdown(f"### {sistema}")
-        items = bloque.get("items", [])
-        for it in items:
-            tarea = it.get("tarea", "Tarea")
-            prioridad = it.get("prioridad", "")
-            tipo = it.get("tipo", "")
-            freq = it.get("frecuencia_h", "")
-            tmin = it.get("tiempo_estimado_min", "")
-            materiales = it.get("materiales", [])
-            notas = it.get("notas", "")
-
-            st.markdown(f"- **{tarea}**  \n"
-                        f"  - Tipo: `{tipo}` | Prioridad: `{prioridad}` | Frecuencia(h): `{freq}` | Tiempo(min): `{tmin}`")
-            if materiales:
-                st.markdown(f"  - Materiales: {', '.join([str(x) for x in materiales])}")
-            if notas:
-                st.markdown(f"  - Notas: {notas}")
-
-    st.subheader("Consumibles recomendados")
-    st.json(data.get("consumibles_recomendados", []))
-
-    st.subheader("Chequeos críticos")
-    st.json(data.get("chequeos_criticos", []))
-
-    st.subheader("Suposiciones")
-    st.json(data.get("suposiciones", []))
-
-    # Export rápido
-    st.download_button(
-        "Descargar JSON",
-        data=json.dumps(data, ensure_ascii=False, indent=2),
-        file_name=f"mantenimiento_{marca}_{modelo}_{horas}h.json".replace(" ", "_"),
-        mime="application/json",
-    )
-
-st.divider()
-st.caption("Nota: asegúrate de tener en Streamlit Secrets un bloque [google] con project_id, client_email y private_key.")
+    temperature = st.slider("Temperatura", 0.0, 1.5, 1.0,
